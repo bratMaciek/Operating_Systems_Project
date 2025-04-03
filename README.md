@@ -32,12 +32,3 @@ A philosopher can start eating when:
 - Automatic transition to thinking state if waiting timeout occurs
 - Ensures system progress even under high contention
 
-## Requirements
-- C compiler with C11 support
-- POSIX threads library
-- Linux environment
-
-## Building and Running
-```bash
-gcc -o dining_philosophers dining_philosophers.c -pthread
-./dining_philosophers
