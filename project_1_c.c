@@ -1,8 +1,3 @@
-/*
-* Current Date and Time (UTC): 2025-04-03 13:07:48
-* Current User's Login: bratMaciek
-*/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
@@ -11,7 +6,7 @@
 #include <stdatomic.h>
 
 #define NUM_PHILOSOPHERS 5
-#define MAX_WAIT_TIME 3  // Maximum waiting time before going back to thinking
+#define MAX_WAIT_TIME 6  // Maximum waiting time before going back to thinking
 
 typedef struct {
     atomic_int state;  // 1: thinking, 2: waiting, 3: eating
