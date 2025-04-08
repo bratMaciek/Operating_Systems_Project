@@ -44,10 +44,6 @@ A philosopher can start eating when:
 - 5ms delay between main loop iterations
 - Random selection of initial waiting philosopher
 
-### Thread Safety
-- `print_mutex`: Ensures atomic console output
-- `state_mutex`: Protects state transitions
-- Atomic variables for state, invoke count, and must_think flags
 
 ## Build and Run
 To compile the program:
