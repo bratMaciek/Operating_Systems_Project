@@ -4,10 +4,11 @@
 This project implements a modified version of the classic Dining Philosophers problem with additional constraints and fairness mechanisms. The implementation uses C with POSIX threads and atomic operations to ensure thread safety.
 
 ## Key Features
-- Modified dining philosophers algorithm with neighbor state constraints
-- Fairness mechanism based on invoke counts
-- Deadlock prevention through waiting timeout
+- Modified dining philosophers algorithm with state-based synchronization
+- Fairness mechanism using invoke counts and priority system
+- Deadlock prevention through waiting timeout and state management
 - Thread-safe operations using mutexes and atomic variables
+- Random state transitions with controlled timing
 
 ## Implementation Details
 
@@ -19,16 +20,36 @@ Philosophers can be in one of three states:
 
 ### Eating Conditions
 A philosopher can start eating when:
-- Previous philosopher (ID - 1) is thinking
-- Next philosopher (ID + 1) is either thinking or waiting
+- They have priority (lowest invoke count or waited long enough)
+- Previous philosopher is not eating
+- Next philosopher is not eating
+- No one else is eating OR the philosopher is not required to think
 
 ### Fairness Mechanisms
 - Tracks invoke counts for each philosopher
 - Forces philosophers to think when their invoke count exceeds lowest count + 1
-- Prevents starvation by monitoring waiting time
+- Priority system based on:
+  - Having the lowest invoke count
+  - Waiting time exceeding half of MAX_WAIT_TIME
 
 ### Deadlock Prevention
-- Maximum waiting time limit (3 seconds)
+- Maximum waiting time limit (6 seconds)
 - Automatic transition to thinking state if waiting timeout occurs
-- Ensures system progress even under high contention
+- Limited number of waiting philosophers (max 2)
+- Priority-based selection of new waiting philosophers
 
+### Timing and Randomization
+- Random thinking time: 1-5 seconds
+- Random eating time: 1-4 seconds
+- 5ms delay between main loop iterations
+- Random selection of initial waiting philosopher
+
+### Thread Safety
+- `print_mutex`: Ensures atomic console output
+- `state_mutex`: Protects state transitions
+- Atomic variables for state, invoke count, and must_think flags
+
+## Build and Run
+To compile the program:
+```bash
+gcc -o dining_philosophers main.c -pthread
