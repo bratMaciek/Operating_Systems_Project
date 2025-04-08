@@ -20,8 +20,20 @@ Philosopher philosophers[NUM_PHILOSOPHERS];
 pthread_mutex_t print_mutex;
 pthread_mutex_t state_mutex;
 
-int get_random(int max) {
-    return rand() % (max + 1);
+// Move random seed initialization to main()
+int get_random(int min, int max) {
+    int result = 0, low_num = 0, hi_num = 0;
+
+    if (min < max) {
+        low_num = min;
+        hi_num = max + 1;
+    } else {
+        low_num = max + 1;
+        hi_num = min;
+    }
+
+    result = (rand() % (hi_num - low_num)) + low_num;
+    return result;
 }
 
 int is_anyone_eating() {
@@ -49,8 +61,10 @@ void eat(Philosopher* philosopher) {
     printf("Philosopher %d is eating.\n", philosopher->philosopher_id);
     pthread_mutex_unlock(&print_mutex);
     
-    int random_time = get_random(4);
-    sleep(random_time);
+    // Use microseconds for sleep to allow more variation
+    // usleep(get_random(1000, 4000));  // 1-4 milliseconds
+    sleep(get_random(1, 4));  // 1-5 milliseconds
+    
     atomic_fetch_add(&philosopher->invoke_count, 1);
     
     int lowest = get_lowest_count();
@@ -66,9 +80,10 @@ void think(Philosopher* philosopher) {
     printf("Philosopher %d is thinking.\n", philosopher->philosopher_id);
     pthread_mutex_unlock(&print_mutex);
     
-    int random_time = get_random(5);
-    sleep(random_time);
+    //usleep(get_random(1000, 5000));  // 1-5 milliseconds
+    sleep(get_random(1, 5));  // 1-5 milliseconds
     
+
     if (atomic_load(&philosopher->must_think)) {
         int lowest = get_lowest_count();
         if (atomic_load(&philosopher->invoke_count) <= (lowest + 1)) {
@@ -78,7 +93,6 @@ void think(Philosopher* philosopher) {
 }
 
 void wait(Philosopher* philosopher) {
-    // Check if waited too long
     time_t current_time = time(NULL);
     if (current_time - philosopher->wait_start >= MAX_WAIT_TIME) {
         pthread_mutex_lock(&print_mutex);
@@ -97,22 +111,32 @@ void wait(Philosopher* philosopher) {
     int prev_id = (philosopher->philosopher_id - 1 + NUM_PHILOSOPHERS) % NUM_PHILOSOPHERS;
     int next_id = (philosopher->philosopher_id + 1) % NUM_PHILOSOPHERS;
     
+    pthread_mutex_lock(&state_mutex);
+    
+    int prev_state = atomic_load(&philosophers[prev_id].state);
+    int next_state = atomic_load(&philosophers[next_id].state);
     int no_one_eating = !is_anyone_eating();
+    int lowest = get_lowest_count();
+    int my_count = atomic_load(&philosopher->invoke_count);
     
-    if ((atomic_load(&philosopher->must_think) == 0 || no_one_eating) && 
-        atomic_load(&philosophers[prev_id].state) == 1 && 
-        (atomic_load(&philosophers[next_id].state) == 1 || 
-         atomic_load(&philosophers[next_id].state) == 2)) {
-        
-        pthread_mutex_lock(&state_mutex);
-        atomic_store(&philosopher->state, 3);
-        pthread_mutex_unlock(&state_mutex);
-        return;
-    }
+    // Priority condition: either has lowest count or has been waiting too long
+    int has_priority = (my_count == lowest) || 
+                      (current_time - philosopher->wait_start >= MAX_WAIT_TIME/2);
     
-    if (atomic_load(&philosopher->must_think)) {
+    // Modified eating condition
+    int can_eat = has_priority && 
+                 prev_state != 3 && // prev not eating
+                 next_state != 3 && // next not eating
+                 (no_one_eating || atomic_load(&philosopher->must_think) == 0);
+    
+    if (can_eat) {
+        atomic_store(&philosopher->state, 3); // eating
+    } else if (current_time - philosopher->wait_start >= MAX_WAIT_TIME) {
+        // Force back to thinking if waited too long
         atomic_store(&philosopher->state, 1);
     }
+    
+    pthread_mutex_unlock(&state_mutex);
 }
 
 int lowest_invoke_count() {
@@ -153,7 +177,8 @@ int main() {
     pthread_mutex_init(&print_mutex, NULL);
     pthread_mutex_init(&state_mutex, NULL);
     
-    srand(time(NULL));
+    // Initialize random seed only once at the start
+    srand((unsigned int)time(NULL));
     
     for (int i = 0; i < NUM_PHILOSOPHERS; i++) {
         atomic_init(&philosophers[i].state, 1);
@@ -163,13 +188,12 @@ int main() {
         philosophers[i].wait_start = 0;
     }
     
-    int randomNum = get_random(4);
+    int randomNum = get_random(0, 4);
     atomic_store(&philosophers[randomNum].state, 2);
-    philosophers[randomNum].wait_start = time(NULL);  // Set initial wait time
+    philosophers[randomNum].wait_start = time(NULL);
     
     while (1) {
         pthread_t threads[NUM_PHILOSOPHERS];
-        printf("\n");
         
         for (int i = 0; i < NUM_PHILOSOPHERS; i++) {
             pthread_create(&threads[i], NULL, execute_task, &philosophers[i]);
@@ -179,18 +203,53 @@ int main() {
             pthread_join(threads[i], NULL);
         }
         
-        int random_add = get_random(1) + 2;
-        int first_philosopher_id = lowest_invoke_count();
-        
         pthread_mutex_lock(&state_mutex);
-        atomic_store(&philosophers[first_philosopher_id].state, 2);
-        philosophers[first_philosopher_id].wait_start = time(NULL);  // Set wait start time
         
-        int second_philosopher_id = (first_philosopher_id + random_add) % NUM_PHILOSOPHERS;
-        atomic_store(&philosophers[second_philosopher_id].state, 2);
-        philosophers[second_philosopher_id].wait_start = time(NULL);  // Set wait start time
+        // Find philosophers with lowest invoke count
+        int lowest = get_lowest_count();
+        int waiting_count = 0;
+        
+        // Count currently waiting philosophers
+        for (int i = 0; i < NUM_PHILOSOPHERS; i++) {
+            if (atomic_load(&philosophers[i].state) == 2) {
+                waiting_count++;
+            }
+        }
+        
+        // Only add new waiting philosophers if there aren't too many already waiting
+        if (waiting_count < 2) {
+            // Create array of eligible philosophers
+            int eligible[NUM_PHILOSOPHERS];
+            int eligible_count = 0;
+            
+            for (int i = 0; i < NUM_PHILOSOPHERS; i++) {
+                if (atomic_load(&philosophers[i].state) == 1 && // thinking
+                    atomic_load(&philosophers[i].invoke_count) == lowest) {
+                    eligible[eligible_count++] = i;
+                }
+            }
+            
+            // Add new waiting philosophers if we found eligible ones
+            if (eligible_count > 0) {
+                int num_to_add = 2 - waiting_count; // Add up to 2 total waiting
+                
+                for (int i = 0; i < num_to_add && i < eligible_count; i++) {
+                    int idx = get_random(0, eligible_count - 1 - i);
+                    int phil_id = eligible[idx];
+                    
+                    // Swap selected philosopher to end of array
+                    eligible[idx] = eligible[eligible_count - 1 - i];
+                    
+                    // Set to waiting state
+                    atomic_store(&philosophers[phil_id].state, 2);
+                    philosophers[phil_id].wait_start = time(NULL);
+                }
+            }
+        }
+        
         pthread_mutex_unlock(&state_mutex);
         
+        printf("\n");
         pthread_mutex_lock(&print_mutex);
         for (int i = 0; i < NUM_PHILOSOPHERS; i++) {
             printf("invoke count philosopher %d: %d (must_think: %d)\n", 
@@ -199,6 +258,9 @@ int main() {
                    atomic_load(&philosophers[i].must_think));
         }
         pthread_mutex_unlock(&print_mutex);
+        
+        // Longer delay between iterations to allow state changes to settle
+        usleep(5000); // 5ms delay
     }
     
     pthread_mutex_destroy(&print_mutex);
