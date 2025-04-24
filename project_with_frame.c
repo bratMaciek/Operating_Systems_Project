@@ -39,6 +39,7 @@ void handle_signal(int sig) {
         atomic_store(&running, 0);
     }
 }
+
 // Utility functions
 int get_random(int min, int max) {
     int result = 0, low_num = 0, hi_num = 0;
@@ -72,10 +73,11 @@ int get_lowest_count() {
     }
     return lowest;
 }
+
 // Philosopher actions
 void eat(Philosopher* philosopher) {
-    int left_chopstick_index = (philosopher->philosopher_id - 1 + NUM_PHILOSOPHERS) % NUM_PHILOSOPHERS; // Left chopstick
-    int right_chopstick_index = philosopher->philosopher_id; // Right chopstick
+    int left_chopstick_index = (philosopher->philosopher_id - 1 + NUM_PHILOSOPHERS) % NUM_PHILOSOPHERS;
+    int right_chopstick_index = philosopher->philosopher_id;
 
     pthread_mutex_lock(&print_mutex);
     printf("Philosopher %d is eating.\n", philosopher->philosopher_id);
@@ -84,6 +86,12 @@ void eat(Philosopher* philosopher) {
     sleep(get_random(1, 4));  // 1-4 seconds
 
     atomic_fetch_add(&philosopher->invoke_count, 1);
+
+    // Check if this philosopher needs to think more after eating
+    int lowest = get_lowest_count();
+    if (atomic_load(&philosopher->invoke_count) > lowest + 2) {
+        atomic_store(&philosopher->must_think, 1);
+    }
 
     atomic_store(&philosopher->state, 1);
 
@@ -101,7 +109,7 @@ void think(Philosopher* philosopher) {
 }
 
 void try_to_wait(Philosopher* philosopher) {
-    int right_chopstick_index = philosopher->philosopher_id; // Right chopstick
+    int right_chopstick_index = philosopher->philosopher_id;
     int expected = 0;
 
     if (atomic_compare_exchange_weak(&chopsticks[right_chopstick_index], &expected, philosopher->philosopher_id + 1)) {
@@ -110,17 +118,33 @@ void try_to_wait(Philosopher* philosopher) {
 }
 
 void wait(Philosopher* philosopher) {
-    int left_chopstick_index = (philosopher->philosopher_id - 1 + NUM_PHILOSOPHERS) % NUM_PHILOSOPHERS; // Left chopstick
-    int right_chopstick_index = philosopher->philosopher_id; // Right chopstick
-
+    int left_chopstick_index = (philosopher->philosopher_id - 1 + NUM_PHILOSOPHERS) % NUM_PHILOSOPHERS;
+    int right_chopstick_index = philosopher->philosopher_id;
+    
+    // Set wait start time when entering waiting state
+    philosopher->wait_start = time(NULL);
+    
     while (atomic_load(&running) && atomic_load(&philosophers[philosopher->philosopher_id].state) == 2) {
+        // Check if waiting time exceeded MAX_WAIT_TIME seconds
+        if (time(NULL) - philosopher->wait_start > MAX_WAIT_TIME) {
+            // Release right chopstick
+            atomic_store(&chopsticks[right_chopstick_index], 0);
+            // Return to thinking state
+            atomic_store(&philosopher->state, 1);
+            
+            pthread_mutex_lock(&print_mutex);
+            printf("Philosopher %d waited too long and returned to thinking.\n", philosopher->philosopher_id);
+            pthread_mutex_unlock(&print_mutex);
+            
+            return;
+        }
+
         // Attempt to acquire the left chopstick
         int expected_left = 0;
 
         if (atomic_load(&chopsticks[left_chopstick_index]) == 0) {
             if (atomic_compare_exchange_weak(&chopsticks[left_chopstick_index], &expected_left, philosopher->philosopher_id + 1)) {
-                // Successfully claimed the left chopstick
-                atomic_store(&philosopher->state, 3); // Set state to eating
+                atomic_store(&philosopher->state, 3);
                 return;
             }
         }
@@ -132,6 +156,15 @@ void* execute_task(void* arg) {
     Philosopher* philosopher = (Philosopher*)arg;
     int current_state = atomic_load(&philosopher->state);
 
+    // Check if philosopher has eaten too much compared to others
+    int lowest = get_lowest_count();
+    if (atomic_load(&philosopher->invoke_count) > lowest + 2) {
+        atomic_store(&philosopher->must_think, 1);
+    } else {
+        atomic_store(&philosopher->must_think, 0);
+    }
+
+    // If must_think is set and not already waiting, force thinking
     if (atomic_load(&philosopher->must_think) && current_state != 2) {
         think(philosopher);
         return NULL;
@@ -213,6 +246,15 @@ void* print_status(void* arg) {
 
         for (int i = 0; i < NUM_PHILOSOPHERS * 9; i++) printf("═");
         printf("\n");
+
+        // Fairness information
+        printf("Lowest meal count: %d\n", get_lowest_count());
+        printf("Must think: ");
+        for (int i = 0; i < NUM_PHILOSOPHERS; i++) {
+            printf("%d ", atomic_load(&philosophers[i].must_think));
+        }
+        printf("\n\n");
+        
         pthread_mutex_unlock(&print_mutex);
         sleep(1);
     }
@@ -220,11 +262,8 @@ void* print_status(void* arg) {
 }
 
 int main() {
-    // Set up signal handling
     signal(SIGINT, handle_signal);
-
     pthread_mutex_init(&print_mutex, NULL);
-
     srand((unsigned int)time(NULL));
 
     // Initialize philosophers
@@ -232,39 +271,42 @@ int main() {
         atomic_init(&philosophers[i].state, 1); // Initial state: thinking
         philosophers[i].philosopher_id = i;
         atomic_init(&philosophers[i].invoke_count, 0);
+        atomic_init(&philosophers[i].must_think, 0); // Initialize must_think to 0
     }
 
-    // Initialize chopsticks (shared memory)
+    // Initialize chopsticks
     for (int i = 0; i < SHARED_MEMORY_SIZE; i++) {
-        atomic_init(&chopsticks[i], 0); // 0 means available, otherwise philosopher ID + 1
+        atomic_init(&chopsticks[i], 0);
     }
 
     pthread_t philosopher_threads[NUM_PHILOSOPHERS];
     pthread_t status_thread;
 
-    // Create threads
+    printf("Starting dining philosophers simulation (with fairness)\n");
+    printf("Number of philosophers: %d\n", NUM_PHILOSOPHERS);
+    printf("Press Ctrl+C to terminate the program\n\n");
+
     pthread_create(&status_thread, NULL, print_status, NULL);
 
     for (int i = 0; i < NUM_PHILOSOPHERS; i++) {
         pthread_create(&philosopher_threads[i], NULL, philosopher_routine, &philosophers[i]);
     }
 
-    // Wait for threads to finish
     for (int i = 0; i < NUM_PHILOSOPHERS; i++) {
         pthread_join(philosopher_threads[i], NULL);
     }
     pthread_join(status_thread, NULL);
 
-    // Cleanup
     pthread_mutex_destroy(&print_mutex);
 
     printf("\nProgram terminated successfully\n");
     printf("\nFinal Status:\n");
     for (int i = 0; i < NUM_PHILOSOPHERS; i++) {
-        printf("Philosopher %d - State: %d, Invoke count: %d\n",
+        printf("Philosopher %d - State: %d, Times eaten: %d, Must think: %d\n",
                i,
                atomic_load(&philosophers[i].state),
-               atomic_load(&philosophers[i].invoke_count));
+               atomic_load(&philosophers[i].invoke_count),
+               atomic_load(&philosophers[i].must_think));
     }
     return 0;
 }
